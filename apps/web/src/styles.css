@@ -1,0 +1,237 @@
+/* Restrained UI: the model is the subject, the panel is instrumentation.
+   Neutral greys with one accent, generous line-height, no decoration that
+   competes with the render. */
+:root {
+  --bg: #0f1113;
+  --panel: #16191c;
+  --panel-2: #1c2023;
+  --line: #282d31;
+  --text: #e7e9ea;
+  --dim: #9aa2a8;
+  --accent: #74a9d8;
+  --accent-dim: #34506b;
+  font-synthesis-weight: none;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 ui-sans-serif, -apple-system, "Inter", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.boot { display: grid; place-items: center; height: 100%; color: var(--dim); padding: 40px; text-align: center; max-width: 720px; margin: 0 auto; }
+.boot.error { color: #e2a0a0; white-space: pre-wrap; }
+
+.app { display: grid; grid-template-columns: 1fr 372px; height: 100%; }
+.stage { position: relative; min-width: 0; background: #e9edf2; }
+.stage { display: flex; min-width: 0; min-height: 0; }
+/* Pin react-three-fiber's own wrapper to the stage.
+   R3F does not mount the Canvas subtree until its ResizeObserver reports a
+   non-zero size, and a wrapper whose height depends on its (empty) content
+   measures zero — so nothing mounts, no error is logged, and the viewport is a
+   blank rectangle. Absolute-positioning the wrapper makes its size come from the
+   stage rather than from its contents, removing the dependency entirely. */
+.stage > .compare { position: absolute; inset: 0; }
+.pane.right .pane-body > div { position: absolute; inset: 0; }
+/* The canvas must be told to fill its parent. R3F's resize observer reported a
+   zero size on first paint here and never re-measured, leaving the drawing buffer
+   at the browser default 300x150 — a blank viewport with no console error. Sizing
+   it in CSS and driving setSize from a ResizeObserver (see ResizeGuard) makes the
+   viewport independent of that. */
+.stage canvas { display: block; width: 100% !important; height: 100% !important; }
+
+.overlay-top {
+  position: absolute; top: 0; left: 0; right: 0; padding: 14px 18px;
+  display: flex; align-items: center; gap: 20px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(12,14,16,.55), rgba(12,14,16,0));
+}
+.brand { display: flex; align-items: baseline; gap: 10px; color: #fff; text-shadow: 0 1px 8px rgba(0,0,0,.5); }
+.brand strong { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; font-weight: 600; }
+.brand span { font-size: 12px; opacity: .82; }
+/* Dwelling picker. Sits next to the brand rather than in .views, because which flat you
+   are looking at is a different kind of choice from which camera. */
+.units { display: flex; align-items: center; gap: 7px; pointer-events: auto; margin-left: 18px; }
+.units > span {
+  font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: #e9edf2; opacity: .7; text-shadow: 0 1px 8px rgba(0,0,0,.5);
+}
+.units select {
+  background: rgba(20,24,28,.72); color: #e9edf2; border: 1px solid rgba(255,255,255,.16);
+  padding: 5px 10px; border-radius: 999px; cursor: pointer; font-size: 11.5px;
+  backdrop-filter: blur(8px); max-width: 34ch;
+}
+.units select:hover { background: rgba(30,36,42,.85); }
+
+.views { display: flex; gap: 6px; flex-wrap: wrap; pointer-events: auto; margin-left: auto; }
+.views button {
+  background: rgba(20,24,28,.62); color: #e9edf2; border: 1px solid rgba(255,255,255,.16);
+  padding: 5px 11px; border-radius: 999px; cursor: pointer; font-size: 11.5px;
+  backdrop-filter: blur(8px);
+}
+.views button:hover { background: rgba(30,36,42,.8); }
+.views button.active { background: var(--accent); border-color: var(--accent); color: #0d1216; font-weight: 600; }
+
+.overlay-bottom {
+  position: absolute; bottom: 0; left: 0; right: 0; padding: 12px 18px;
+  display: flex; gap: 18px; align-items: center; color: #fff;
+  background: linear-gradient(0deg, rgba(12,14,16,.5), rgba(12,14,16,0));
+  text-shadow: 0 1px 6px rgba(0,0,0,.6); font-size: 12px;
+}
+.overlay-bottom label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.overlay-bottom .slider { gap: 9px; }
+.overlay-bottom input[type=range] { width: 110px; accent-color: var(--accent); }
+.overlay-bottom input[type=checkbox] { accent-color: var(--accent); }
+
+.panel { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 0 0 40px; }
+.panel section { padding: 18px 18px 20px; border-bottom: 1px solid var(--line); }
+.panel h2 { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--dim); margin: 0 0 12px; font-weight: 600; }
+.h2row { display: flex; align-items: baseline; justify-content: space-between; }
+.panel h3 { font-size: 11px; color: var(--dim); margin: 14px 0 8px; font-weight: 500; opacity: .8; }
+.count { color: var(--accent); margin-left: 4px; }
+.hint { color: var(--dim); font-size: 11.5px; margin: -4px 0 12px; }
+
+.schemes { display: grid; gap: 7px; }
+.scheme {
+  text-align: left; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 7px; padding: 10px 12px; cursor: pointer; color: var(--text);
+  display: grid; gap: 3px;
+}
+.scheme:hover { border-color: #3a4249; }
+.scheme.active { border-color: var(--accent); background: #172433; }
+.scheme-name { font-weight: 600; font-size: 12.5px; }
+.scheme-desc { color: var(--dim); font-size: 11px; line-height: 1.45; }
+
+.slot { margin-bottom: 11px; }
+.slot-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+.slot-label { font-size: 12px; }
+.slot-value { font-size: 10.5px; color: var(--dim); text-align: right; }
+.swatches { display: flex; flex-wrap: wrap; gap: 4px; }
+.swatch {
+  width: 21px; height: 21px; border-radius: 4px; cursor: pointer;
+  border: 1px solid rgba(255,255,255,.14); padding: 0;
+}
+.swatch:hover { transform: scale(1.12); }
+.swatch.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.rooms { display: grid; gap: 3px; }
+.room {
+  display: grid; gap: 2px; text-align: left; background: transparent; border: 1px solid transparent;
+  border-radius: 6px; padding: 7px 9px; cursor: pointer; color: var(--text);
+}
+.room:hover { background: var(--panel-2); }
+.room.active { background: #172433; border-color: var(--accent-dim); }
+.room-name { font-size: 12px; font-weight: 500; }
+.room-meta { font-size: 10.5px; color: var(--dim); }
+.room-meta em { font-style: normal; opacity: .8; }
+.cam-dot { color: var(--accent); margin-left: 6px; }
+
+.furniture { display: grid; gap: 8px; }
+.fitem { background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; }
+.fitem.hidden { opacity: .42; }
+.fitem-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.fitem-head strong { font-size: 12px; font-weight: 600; }
+.fitem-meta { font-size: 10.5px; color: var(--dim); margin-top: 2px; }
+.fitem-reason { font-size: 10.5px; color: #7d868c; margin: 4px 0 6px; line-height: 1.4; }
+.fitem select {
+  width: 100%; background: #101315; color: var(--text); border: 1px solid var(--line);
+  border-radius: 5px; padding: 5px 7px; font-size: 11.5px;
+}
+.tag { font-size: 9.5px; padding: 1px 5px; border-radius: 3px; margin-left: 6px; }
+.tag.locked { background: #3a2f18; color: #d9b877; }
+
+.mini {
+  background: transparent; border: 1px solid var(--line); color: var(--dim);
+  border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;
+}
+.mini:hover { color: var(--text); border-color: #3a4249; }
+
+.notes { margin: 0; padding-left: 16px; color: var(--dim); font-size: 11px; line-height: 1.6; }
+.notes li { margin-bottom: 4px; }
+
+@media (max-width: 1000px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: 52vh 1fr; }
+  .panel { border-left: none; border-top: 1px solid var(--line); }
+}
+
+/* ── upload ───────────────────────────────────────────────────────────────── */
+.upload { min-height: 100%; display: grid; place-items: center; padding: 40px 20px; }
+.upload-inner { width: 100%; max-width: 720px; }
+.upload h1 { font-size: 22px; letter-spacing: .16em; text-transform: uppercase; margin: 0 0 10px; font-weight: 600; }
+.lede { color: var(--dim); line-height: 1.6; margin: 0 0 26px; font-size: 13px; }
+.centred { text-align: center; }
+
+.drop {
+  border: 1.5px dashed var(--line); border-radius: 12px; padding: 52px 24px;
+  display: grid; gap: 8px; place-items: center; cursor: pointer; background: var(--panel);
+  transition: border-color .15s, background .15s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); background: #172433; }
+.drop strong { font-size: 14px; }
+.drop span { color: var(--dim); font-size: 11.5px; }
+
+.job { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+.job-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.bar { height: 5px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin-bottom: 8px; }
+.bar-fill { height: 100%; background: var(--accent); transition: width .4s ease; }
+.err { color: #e2a0a0; font-size: 12px; white-space: pre-wrap; margin: 10px 0; }
+
+.units-wrap h3 { font-size: 12px; margin: 4px 0 10px; font-weight: 600; }
+.unit-list { display: grid; gap: 5px; max-height: 46vh; overflow-y: auto; }
+.unit {
+  text-align: left; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 7px; padding: 9px 11px; cursor: pointer; color: var(--text); display: grid; gap: 2px;
+}
+.unit:hover:not(:disabled) { border-color: var(--accent); background: #172433; }
+.unit:disabled { opacity: .5; cursor: default; }
+.unit-name { font-size: 12.5px; font-weight: 600; }
+.unit-idx { color: var(--dim); font-weight: 400; }
+.unit-meta, .unit-mix { font-size: 10.5px; color: var(--dim); }
+.unit-mix { opacity: .75; }
+.warn { color: #d9b877; font-style: normal; }
+
+/* ── compare ──────────────────────────────────────────────────────────────── */
+.compare { position: absolute; inset: 0; display: flex; background: var(--bg); }
+.pane { display: flex; flex-direction: column; min-width: 0; }
+.pane-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--panel);
+  flex: 0 0 auto;
+}
+.pane-title { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.pane-body { flex: 1 1 auto; min-height: 0; position: relative; background: #e9edf2; }
+.pane-body.scroll { overflow: auto; background: #fbfaf8; }
+.pane-body.scroll img { display: block; min-width: 100%; }
+.pane.right .pane-body { background: #e9edf2; }
+
+.seg { display: flex; gap: 2px; }
+.seg button {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+  padding: 3px 9px; font-size: 10.5px; cursor: pointer; text-transform: capitalize;
+}
+.seg button:first-child { border-radius: 5px 0 0 5px; }
+.seg button:last-child { border-radius: 0 5px 5px 0; }
+.seg button.active { background: var(--accent); border-color: var(--accent); color: #0d1216; font-weight: 600; }
+.seg button:disabled { opacity: .4; cursor: default; }
+.zoom { display: flex; align-items: center; gap: 5px; }
+
+.divider { width: 5px; flex: 0 0 5px; cursor: col-resize; background: var(--line); }
+.divider:hover { background: var(--accent); }
+
+.app.nopanel { grid-template-columns: 1fr; }
+
+
+/* The app chrome is a real header row, not an overlay.
+   Overlaying it worked when the stage was a single 3D viewport, but the compare view
+   has its own per-pane toolbars and the two collided. */
+.stage { display: flex; flex-direction: column; }
+.stage > .overlay-top {
+  position: static; flex: 0 0 auto; background: var(--panel);
+  border-bottom: 1px solid var(--line); padding: 8px 12px;
+}
+.stage > .compare { position: relative; inset: auto; flex: 1 1 auto; min-height: 0; }
+.stage > .overlay-bottom {
+  position: static; flex: 0 0 auto; background: var(--panel);
+  border-top: 1px solid var(--line); padding: 7px 12px; color: var(--text); text-shadow: none;
+}
+.stage > .overlay-top .brand { text-shadow: none; }

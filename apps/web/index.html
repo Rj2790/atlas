@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atlas — floor plan to 3D</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Collect first-paint failures. Registered before the app because a throw
+      // during the 3D subtree's first render leaves a blank viewport and, depending
+      // on where it happens, nothing in the console.
+      window.__errs = [];
+      addEventListener('error', (e) =>
+        window.__errs.push({ msg: String(e.message), src: e.filename, line: e.lineno }));
+      addEventListener('unhandledrejection', (e) =>
+        window.__errs.push({ msg: 'unhandled rejection: ' + String(e.reason) }));
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

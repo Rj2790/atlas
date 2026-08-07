@@ -1,0 +1,24 @@
+.venv/
+node_modules/
+out/
+__pycache__/
+*.pyc
+.env
+apps/web/public/data/
+dist/
+external/
+
+# Build artifacts and job outputs
+out-*/
+*.log
+
+# Root-level duplicate of data/samples/demo-cad-1.dwg
+/demo-cad-1.dwg
+
+# Derived from data/samples/*.dwg by ODA conversion — regenerated on demand
+data/samples/*.dxf
+data/samples/work/
+
+# Downloaded asset caches (ambientCG, Poly Haven) — fetched on demand
+data/materials/
+data/models/
