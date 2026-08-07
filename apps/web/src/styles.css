@@ -235,3 +235,12 @@ body {
   border-top: 1px solid var(--line); padding: 7px 12px; color: var(--text); text-shadow: none;
 }
 .stage > .overlay-top .brand { text-shadow: none; }
+
+/* Download links sit among the view buttons and dress like them. */
+.views a.dl {
+  display: inline-flex; align-items: center; padding: 4px 10px;
+  border: 1px solid rgba(255,255,255,.16); border-radius: 6px;
+  background: rgba(30,36,42,.6); color: var(--text, #dfe6ec);
+  font-size: 12px; text-decoration: none; pointer-events: auto;
+}
+.views a.dl:hover { background: rgba(30,36,42,.85); }

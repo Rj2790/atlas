@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import Compare from "./Compare";
 import Upload from "./Upload";
 import { resolveMaterial, useStore } from "./store";
-import { getJob, type Job } from "./api";
+import { getJob, unitUrl, type Job } from "./api";
 import type { Material } from "./types";
 import "./styles.css";
 
@@ -286,6 +286,26 @@ export default function App() {
   return <Workspace job={job} onNew={() => openJob(null)} />;
 }
 
+/** Downloads for the current dwelling: GLB for 3D tools, IFC for BIM tools.
+ *
+ * Both are exported lazily by the API on first request, so the first click can
+ * take a few seconds; after that they are served from disk.
+ */
+function DownloadMenu({ job }: { job: Job }) {
+  const unit = useStore((s) => s.unit);
+  const current = unit ?? job.built[0]?.unit ?? 1;
+  return (
+    <>
+      <a className="dl" href={unitUrl(job.id, current, "model.glb")} download>
+        GLB
+      </a>
+      <a className="dl" href={unitUrl(job.id, current, "model.ifc")} download>
+        IFC
+      </a>
+    </>
+  );
+}
+
 function Workspace({ job, onNew }: { job: Job; onNew: () => void }) {
   const loading = useStore((s) => s.loading);
   const error = useStore((s) => s.error);
@@ -339,6 +359,7 @@ function Workspace({ job, onNew }: { job: Job; onNew: () => void }) {
                 </button>
               ))}
             <button onClick={() => setPanel((p) => !p)}>{panel ? "hide panel" : "show panel"}</button>
+            <DownloadMenu job={job} />
             <button onClick={onNew}>new upload</button>
           </div>
         </div>

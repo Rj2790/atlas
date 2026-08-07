@@ -1,0 +1,9 @@
+ezdxf==1.4.4
+fastapi==0.141.1
+ifcopenshell==0.8.5
+numpy==2.5.1
+pillow==12.3.0
+pytest==9.1.1
+shapely==2.1.2
+trimesh==5.0.0
+uvicorn==0.52.1

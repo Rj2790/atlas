@@ -118,6 +118,54 @@ _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
 
 
+def _persist(job: Job) -> None:
+    """Write the job's metadata beside its artefacts.
+
+    Jobs used to live only in memory, so every server restart orphaned every
+    finished build on disk — the picker forgot dwellings whose scene.json was
+    sitting right there, and users re-uploaded a drawing they had already
+    processed. The meta file is written at each terminal transition and read
+    back at startup.
+    """
+    try:
+        job.dir.mkdir(parents=True, exist_ok=True)
+        (job.dir / "meta.json").write_text(json.dumps(job.public(), default=str))
+    except Exception:  # noqa: BLE001 — persistence must never fail a build
+        pass
+
+
+def _rehydrate() -> None:
+    """Reload finished jobs from disk at startup."""
+    if not JOBS_DIR.exists():
+        return
+    for meta in sorted(JOBS_DIR.glob("*/meta.json")):
+        try:
+            d = json.loads(meta.read_text())
+            if d.get("status") != "done":
+                continue  # a build interrupted by the restart cannot resume
+            job = Job(
+                id=d["id"],
+                source_name=d.get("source_name", ""),
+                kind=d.get("kind", "cad"),
+                status="done",
+                progress=1.0,
+                stage=d.get("stage", "ready"),
+                units=d.get("units", []),
+                built=d.get("built", []),
+                notes=d.get("notes", []),
+                warnings=d.get("warnings", []),
+                quality=d.get("quality", {}),
+                art_direction=d.get("art_direction", {}),
+            )
+            with _LOCK:
+                _JOBS.setdefault(job.id, job)
+        except Exception:  # noqa: BLE001 — one bad meta must not kill startup
+            continue
+
+
+_rehydrate()
+
+
 def _job(job_id: str) -> Job:
     with _LOCK:
         job = _JOBS.get(job_id)
@@ -271,8 +319,10 @@ def _build(job: Job, src: Path, unit: int | None, scheme: str | None, direct: bo
         )
 
         job.status, job.stage, job.progress = "done", f"{len(built)} dwelling(s) ready", 1.0
+        _persist(job)
     except Exception as exc:  # noqa: BLE001
         job.status, job.error = "error", f"{type(exc).__name__}: {exc}"
+        _persist(job)
 
 
 def _unit_quality_figures(plan: "Any", evidence: "Any" = None) -> dict:
@@ -420,6 +470,38 @@ async def unit_plan(job_id: str, unit: int) -> FileResponse:
 @app.get("/api/jobs/{job_id}/units/{unit}/layout.svg")
 async def unit_layout(job_id: str, unit: int) -> FileResponse:
     return _unit_file(_job(job_id), unit, "layout.svg", "image/svg+xml")
+
+
+@app.get("/api/jobs/{job_id}/units/{unit}/model.ifc")
+async def unit_ifc(job_id: str, unit: int) -> FileResponse:
+    """Export this dwelling as IFC4 on first request, then serve it from disk.
+
+    The IFC is the interchange artefact: walls as IfcWall, doors filling
+    IfcOpeningElements, rooms as IfcSpace with measured areas and provenance
+    property sets. Exported lazily like the GLB — it is for downloading into
+    BIM tooling, nothing on screen waits for it.
+    """
+    import json as _json
+
+    from atlas.planir import PlanIR
+
+    job = _job(job_id)
+    udir = job.dir / "units" / str(unit)
+    plan_path = udir / "plan.json"
+    if not plan_path.exists():
+        raise HTTPException(409, f"dwelling {unit} is not built (job is {job.status})")
+    out = udir / "model.ifc"
+    if not out.exists():
+        from atlas.build.ifc import export_ifc
+
+        plan = PlanIR.from_dict(_json.loads(plan_path.read_text()))
+        recorded = next((b for b in job.built if b.get("unit") == unit), None)
+        export_ifc(plan, out, name=(recorded or {}).get("name"))
+    return FileResponse(
+        out,
+        media_type="application/x-step",
+        filename=f"atlas-unit-{unit}.ifc",
+    )
 
 
 @app.get("/api/jobs/{job_id}/units/{unit}/model.glb")
