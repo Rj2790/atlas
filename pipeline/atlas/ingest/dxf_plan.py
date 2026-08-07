@@ -331,14 +331,21 @@ class _Buckets:
         return out
 
 
-def _bucket(entities: Iterable[FlatEntity]) -> _Buckets:
+def _bucket(
+    entities: Iterable[FlatEntity],
+    overrides: dict[str, LayerRole] | None = None,
+) -> _Buckets:
+    """Group entities by layer role. ``overrides`` come from convention inference
+    and apply only to layers the rule table classified as UNKNOWN."""
     by_role: dict[LayerRole, list[FlatEntity]] = defaultdict(list)
     unknown: Counter[str] = Counter()
     for e in entities:
-        v = classify_layer(e.layer)
-        if v.role is LayerRole.UNKNOWN:
+        role = (overrides or {}).get(e.layer)
+        if role is None:
+            role = classify_layer(e.layer).role
+        if role is LayerRole.UNKNOWN:
             unknown[e.layer] += 1
-        by_role[v.role].append(e)
+        by_role[role].append(e)
     return _Buckets(dict(by_role), dict(unknown))
 
 
@@ -3752,7 +3759,16 @@ def extract_plan(
     notes.append(f"scale: {scale_why}")
     entities = [_scale_entity(e, mm_per_unit) for e in raw_entities]
 
-    buckets = _bucket(entities)
+    # When the rule table cannot read this office's layer vocabulary, ask a
+    # language model to map the names — names only, never geometry. Dormant on
+    # drawings whose conventions the rules already know, and on machines with no
+    # key; either way the notes say what happened.
+    from .conventions import infer_layer_conventions
+
+    overrides, conv_notes = infer_layer_conventions(entities)
+    notes.extend(conv_notes)
+
+    buckets = _bucket(entities, overrides)
     role_summary = ", ".join(
         f"{r.value}:{len(v)}" for r, v in sorted(buckets.by_role.items(), key=lambda kv: -len(kv[1]))[:10]
     )

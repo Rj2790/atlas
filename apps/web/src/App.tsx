@@ -302,6 +302,9 @@ function DownloadMenu({ job }: { job: Job }) {
       <a className="dl" href={unitUrl(job.id, current, "model.ifc")} download>
         IFC
       </a>
+      <a className="dl" href={unitUrl(job.id, current, "model.obj")} download>
+        OBJ
+      </a>
     </>
   );
 }

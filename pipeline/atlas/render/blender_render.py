@@ -53,6 +53,39 @@ def render(
             f"Blender not found at {blender}. Install Blender or pass blender=<path>."
         )
     Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    # Expand each room's ceiling polygon outward so it overlaps the wall bodies.
+    # Floor outlines stop at (or a raster-cell short of) the wall face, and a
+    # ceiling cut to the same line leaves a horizontal skylight gap the sun pours
+    # through — every wall-head in the first ceilinged render wore a bright slit.
+    # Shapely lives host-side, so the buffering happens here and Blender just
+    # receives polygons it can trust.
+    import json as _json
+    import tempfile as _tempfile
+
+    try:
+        from shapely.geometry import Polygon as _Poly
+
+        data = _json.loads(Path(scene_json).read_text())
+        for room in data.get("rooms") or []:
+            poly = room.get("polygon") or []
+            if len(poly) < 3:
+                continue
+            grown = _Poly(poly).buffer(0.2, join_style=2)
+            if grown.is_empty or not hasattr(grown, "exterior"):
+                continue
+            room["render_ceiling_polygon"] = [
+                [float(x), float(z)] for x, z in grown.exterior.coords[:-1]
+            ]
+        tmp = _tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, dir=out_dir
+        )
+        _json.dump(data, tmp)
+        tmp.close()
+        scene_json = tmp.name
+    except Exception:  # noqa: BLE001 — renders must not die on ceiling prep
+        pass
+
     proc = subprocess.run(
         [
             blender, "--background", "--factory-startup",
@@ -297,6 +330,105 @@ def _blender_main() -> None:
         if dv.length > 1e-6:
             obj.rotation_euler = dv.normalized().to_track_quat("-Z", "Y").to_euler()
 
+    # --- render-only ceilings ------------------------------------------------
+    # The delivered model is open-top so the web viewer can look in from above,
+    # but a photographed interior is lit through its windows, not through a
+    # missing roof. Ceilings are synthesised here per room from the scene's own
+    # polygons and hidden again for the overview shot — the model on disk stays
+    # ceiling-free.
+    no_extras = os.environ.get("ATLAS_RENDER_NO_EXTRAS") == "1"  # diagnostic toggle
+    no_ceil = no_extras or os.environ.get("ATLAS_RENDER_NO_CEILINGS") == "1"
+    no_portal = no_extras or os.environ.get("ATLAS_RENDER_NO_PORTALS") == "1"
+    ceil_mat = bpy.data.materials.new("atlas-ceiling")
+    ceil_mat.use_nodes = True
+    bsdf = ceil_mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        bsdf.inputs["Base Color"].default_value = (0.93, 0.92, 0.90, 1.0)
+        bsdf.inputs["Roughness"].default_value = 0.92
+    import mathutils
+    import mathutils.geometry
+
+    for ridx, room in enumerate([] if no_ceil else (scene_data.get("rooms") or [])):
+        poly = room.get("render_ceiling_polygon") or room.get("polygon") or []
+        if len(poly) < 3:
+            continue
+        # 50 mm below the wall tops. Coplanar with them, the sun grazes straight
+        # through the seam and every wall-ceiling junction renders as a bright slit;
+        # tucked below, the wall body itself blocks the gap. Nobody can see 50 mm of
+        # ceiling height, everybody can see the leaks.
+        #
+        # The per-room stagger exists because expanded ceilings overlap their
+        # neighbours', and two coplanar faces z-fight into black patches. A few
+        # deterministic millimetres of separation is invisible from eye height.
+        h = (
+            float(room.get("floor_level", 0.0))
+            + float(room.get("ceiling_height", 2.9))
+            - 0.05
+            - 0.004 * (ridx % 8)
+        )
+        verts = [(float(x), -float(z), h) for x, z in poly]
+        # Room outlines are concave and raster-edged (hundreds of vertices); a single
+        # n-gon over one renders as garbage that swallowed a whole camera view.
+        # Tessellate to triangles instead.
+        ring = [mathutils.Vector((v[0], v[1], 0.0)) for v in verts]
+        faces = [tuple(tri) for tri in mathutils.geometry.tessellate_polygon([ring])]
+        if not faces:
+            continue
+        mesh = bpy.data.meshes.new(f"ceil-{room['id']}")
+        mesh.from_pydata(verts, [], faces)
+        mesh.update()
+        ob = bpy.data.objects.new(f"ceil-{room['id']}", mesh)
+        ob.data.materials.append(ceil_mat)
+        ob["atlas_kind"] = "ceiling"
+        sc.collection.objects.link(ob)
+
+    # --- window portals --------------------------------------------------------
+    # With real ceilings the interiors are lit through the glazing, which Cycles
+    # samples badly blind: portals tell it where the light comes in, trading a
+    # handful of area lights for a large drop in interior noise.
+    rooms_xy = [
+        (
+            (float(r.get("centroid", [0, 0, 0])[0]), -float(r.get("centroid", [0, 0, 0])[2])),
+            r,
+        )
+        for r in scene_data.get("rooms") or []
+    ]
+    portals = 0
+    for op in [] if no_portal else (scene_data.get("openings") or []):
+        if not op.get("glazed"):
+            continue
+        cx, cy, cz = (float(v) for v in op.get("centre", [0, 0, 0]))
+        bx, by = cx, -cz
+        w = float(op.get("width", 1.0))
+        hgt = float(op.get("height", 1.2))
+        zmid = float(op.get("sill", 0.0)) + hgt / 2.0
+        data = bpy.data.lights.new(f"portal-{op['id']}", type="AREA")
+        data.shape = "RECTANGLE"
+        data.size = w
+        data.size_y = hgt
+        data.energy = 0.0
+        data.cycles.is_portal = True
+        ob = bpy.data.objects.new(f"portal-{op['id']}", data)
+        ob["atlas_kind"] = "portal"
+        sc.collection.objects.link(ob)
+        ob.location = (bx, by, zmid)
+        # An area light emits (and a portal admits) along its local -Z. Stand the
+        # rectangle upright in the wall plane and face it at the nearest room's
+        # centre — a portal facing outward degrades rather than helps.
+        yaw = float(op.get("rotation_y", 0.0))
+        near = min(rooms_xy, key=lambda t: (t[0][0] - bx) ** 2 + (t[0][1] - by) ** 2, default=None)
+        import mathutils
+
+        normal = mathutils.Vector((math.sin(yaw), math.cos(yaw), 0.0))
+        if near is not None:
+            to_room = mathutils.Vector((near[0][0] - bx, near[0][1] - by, 0.0))
+            if normal.dot(to_room) < 0:
+                normal = -normal
+        ob.rotation_euler = normal.to_track_quat("-Z", "Z").to_euler()
+        portals += 1
+    if portals:
+        print(f"[atlas] {portals} window portal(s) placed")
+
     # --- cameras: use the framing computed in assemble_scene ---
     # Framing is not recomputed here. It needs the room polygons and a containment
     # test to guarantee the camera stands inside an L-shaped room, which is exactly
@@ -326,6 +458,17 @@ def _blender_main() -> None:
 
         px, py, pz = spec["position"]
         tx, ty, tz = spec["target"]
+        is_overview = spec.get("id") == "cam-overview"
+        # The assemble-stage interior cameras float at ~3.25 m for the open-top
+        # viewer — through a real ceiling that is a view of plaster from above,
+        # which is exactly what the first ceilinged render produced: a white
+        # frame. Interiors here are photographs, and the doctrine at the top of
+        # this file already says how photographs are made: eye height, level.
+        # The x/z stay as assemble placed them (guaranteed inside the room);
+        # only the tripod height changes.
+        if not is_overview and not no_ceil:
+            py = 1.55
+            ty = 1.45
         # glTF Y-up -> Blender Z-up.
         cam.location = (px, -pz, py)
         direction = Vector((tx, -tz, ty)) - Vector(cam.location)
@@ -333,29 +476,20 @@ def _blender_main() -> None:
             cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
         sc.camera = cam
 
-        # Ceilings are not built at all now, so there is nothing to hide per view.
-        is_overview = spec.get("id") == "cam-overview"
-
-        # Exposure has to differ between the two view types, and this is why:
-        # removing the ceilings for the overview also removes what was blocking the
-        # sky, so the same settings that light an interior correctly flood the
-        # overview to white. The overview therefore drops the sky, pulls exposure
-        # down, and switches the per-room fill lights off — with no ceiling above
-        # them they are lighting nothing and only adding to the blowout.
-        bg.inputs[1].default_value = 0.28 if is_overview else 1.15
-        # Interiors got noticeably darker once the ceiling was closed over the wall
-        # zones, because the render had been quietly lit through that gap. With a real
-        # slab overhead the light has to come through the windows, so the sky is
-        # stronger and the exposure compensation smaller.
-        # With no ceiling the sky reaches every surface directly, so it needs to be
-        # much weaker than it would through windows — and the two view types no longer
-        # need to differ nearly as much, since neither is lit through a hole.
-        bg.inputs[1].default_value = 0.55
-        base_exposure = float(ad.get("exposure", -0.1))
-        sc.view_settings.exposure = (-1.05 if is_overview else base_exposure - 0.35)
+        # Two view types, two lighting worlds. The overview looks into an open-top
+        # dollhouse: ceilings and portals hidden, sky pulled right down or it floods
+        # everything, fill lights off because they hang below a ceiling that is not
+        # there. An interior is a photograph inside a closed room: ceiling on, lit
+        # through the glazing (hence the stronger sky and the portals), fills on.
         for ob in bpy.data.objects:
-            if ob.type == "LIGHT" and ob.get("atlas_kind") == "fill":
+            kind_tag = ob.get("atlas_kind")
+            if kind_tag in ("ceiling", "portal"):
                 ob.hide_render = is_overview
+            elif ob.type == "LIGHT" and kind_tag == "fill":
+                ob.hide_render = is_overview
+        bg.inputs[1].default_value = 0.5 if is_overview else 1.15
+        base_exposure = float(ad.get("exposure", -0.1))
+        sc.view_settings.exposure = -1.05 if is_overview else base_exposure
 
         name = str(spec.get("name") or spec.get("id") or f"view{i}").replace("/", "-")
         sc.render.filepath = os.path.join(out_dir, f"{i+1:02d}-{name}.png")

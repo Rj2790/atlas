@@ -24,6 +24,7 @@ Texture and model caches are shared across jobs and served from one place — th
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import threading
@@ -40,6 +41,18 @@ from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "pipeline"))
+
+# Load the repo's .env into the process. The raster path needs OPENROUTER_API_KEY,
+# and "works when launched from a shell that happened to export it" is the kind of
+# environment dependency that fails exactly when someone else runs the server.
+_env_file = ROOT / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _k, _v = _line.split("=", 1)
+        os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
 JOBS_DIR = ROOT / "out-jobs"
 SHARED = ROOT / "data"
@@ -506,7 +519,12 @@ async def unit_ifc(job_id: str, unit: int) -> FileResponse:
 
 @app.get("/api/jobs/{job_id}/units/{unit}/model.glb")
 async def unit_glb(job_id: str, unit: int, scheme: str | None = None) -> FileResponse:
-    """Export this dwelling's GLB on first request, then serve it from disk.
+    out = _ensure_unit_glb(_job(job_id), unit, scheme)
+    return FileResponse(out, media_type="model/gltf-binary")
+
+
+def _ensure_unit_glb(job: Job, unit: int, scheme: str | None) -> Path:
+    """Export this dwelling's GLB on first request; return its path.
 
     Building every unit's GLB up front would be ~320 MB and several minutes on a
     sixteen-dwelling drawing, for files most users never download. The browser renders
@@ -519,7 +537,6 @@ async def unit_glb(job_id: str, unit: int, scheme: str | None = None) -> FileRes
     from atlas.build.textures import TextureCache
     from atlas.planir import PlanIR
 
-    job = _job(job_id)
     udir = job.dir / "units" / str(unit)
     plan_path = udir / "plan.json"
     if not plan_path.exists():
@@ -545,7 +562,36 @@ async def unit_glb(job_id: str, unit: int, scheme: str | None = None) -> FileRes
             textures=TextureCache(SHARED / "materials"),
             models=ModelCache(cache_dir=SHARED / "models"),
         )
-    return FileResponse(out, media_type="model/gltf-binary")
+    return out
+
+
+@app.get("/api/jobs/{job_id}/units/{unit}/model.obj")
+async def unit_obj(job_id: str, unit: int, scheme: str | None = None) -> FileResponse:
+    """The dwelling as a zipped OBJ + MTL, converted from the GLB.
+
+    OBJ is what the founding brief promised and what older DCC pipelines still
+    speak. The MTL carries base colours; textures stay a GLB/IFC feature — OBJ's
+    material model would only carry them as loose files of dubious portability.
+    """
+    import tempfile
+    import zipfile
+
+    job = _job(job_id)
+    glb = _ensure_unit_glb(job, unit, scheme)
+    out = glb.with_suffix(".obj.zip")
+    if not out.exists() or out.stat().st_mtime < glb.stat().st_mtime:
+        import trimesh
+
+        scene3d = trimesh.load(str(glb))
+        with tempfile.TemporaryDirectory() as td:
+            obj_path = Path(td) / "model.obj"
+            scene3d.export(str(obj_path))
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                for fpath in sorted(Path(td).iterdir()):
+                    z.write(fpath, fpath.name)
+    return FileResponse(
+        out, media_type="application/zip", filename=f"atlas-unit-{unit}-obj.zip"
+    )
 
 
 def _unit_file(job: Job, unit: int, name: str, mime: str) -> FileResponse:
