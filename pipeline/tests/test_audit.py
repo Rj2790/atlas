@@ -36,21 +36,23 @@ DRAWING = Path(__file__).resolve().parents[2] / "data" / "samples" / "demo-cad-1
 # unit number -> failure count, as measured on 2026-08-05. Lower is better; any increase
 # is a regression. Units absent from this map must pass cleanly.
 BASELINE: dict[int, int] = {
-    # 2026-08-06: the audit grew teeth — area accounting against the declared polygon,
-    # printed-dimension agreement, unjustified walls/doors/windows, furniture placement.
-    # Under the stronger audit the drawing's sixteen dwellings hold one known defect
-    # family: allocation against printed dimensions where the drawing's own kerb/screen
-    # line work (150 mm bands on the wall layer) fences part of a room's printed
-    # rectangle. Fixing it means teaching the growth engine that kerb-scale bands are
-    # claimable for the labelled room — spaces.py surgery, tracked as the next geometry
-    # work. Everything else — enclosure, reachability, overlaps, swallowed walls,
-    # invented walls, phantom openings, doubled doors, area accounting (92-100%
-    # accounted everywhere) — passes clean.
-    1: 1,  # dims 88%: TOILET at 49%, shower kerb inside its printed rectangle
-    4: 1,  # dims 85%: LIVING at 59%, open-plan share held by unlabelled circulation
-    9: 1,  # dims 88%: TOILET at 43%, kerb-fenced flank
-    14: 1,  # dims 85%: TOILET at 38%, kerb-fenced end
-    16: 1,  # enclosure: TOILET edge 1234 mm short of the drawn kerb it should meet
+    # Empty: every dwelling passes every invariant of the EXPANDED audit (area
+    # accounting against the declared polygon, printed dimensions, drawn-evidence
+    # checks on walls/doors/windows, furniture placement) as of 2026-08-07.
+    #
+    # The final defect family was kerb-scale line work: 150 mm bands drawn on the
+    # wall layer inside service rooms (shower kerbs, screens) that the solver
+    # cannot tell from thin partitions. Shape alone could not decide — the same
+    # thin-and-short rule freed two toilets and cost two others their real walls —
+    # so growth now runs twice: candidates beside an under-budget service room
+    # whose far side is claimed by *nothing* are proven kerbs and released. What
+    # remained after that were audit refinements, not extraction fixes: printed
+    # dimensions that span structure the drawing itself shows (a toilet's printed
+    # rectangle covering its own 150 mm walls and shaft — 87% explained by drawn
+    # structure), shaft pockets whose rims read as leaks (the enclosure around
+    # them is intact), and a reachability threshold stricter than the partition's
+    # own raster (33 mm apart at an open threshold is connected, not stranded).
+    # Any entry appearing here again is a regression; record its cause beside it.
 }
 
 

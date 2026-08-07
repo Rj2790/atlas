@@ -35,7 +35,7 @@ import math
 from dataclasses import dataclass, field, replace
 from typing import Sequence
 
-from shapely.geometry import LineString, Point as ShpPoint, Polygon as ShpPolygon, box as shp_box
+from shapely.geometry import LineString, MultiPolygon, Point as ShpPoint, Polygon as ShpPolygon, box as shp_box
 from shapely.ops import unary_union
 
 from ..planir import Opening, OpeningKind, PlanIR, Room, RoomKind, Source, Wall
@@ -125,7 +125,16 @@ def _scaled(item: FurnitureItem, factor: float) -> FurnitureItem:
 
 def _room_polygon_m(room: Room, origin: tuple[float, float]) -> ShpPolygon:
     ox, oy = origin
-    return ShpPolygon([((x - ox) * MM_TO_M, -(y - oy) * MM_TO_M) for x, y in room.polygon])
+    poly = ShpPolygon([((x - ox) * MM_TO_M, -(y - oy) * MM_TO_M) for x, y in room.polygon])
+    if not poly.is_valid:
+        # A ring that touches itself at a point (a healed floor's pinch) is invalid to
+        # shapely and every boolean op on it raises TopologyException mid-furnish.
+        fixed = poly.buffer(0)
+        if isinstance(fixed, MultiPolygon) and not fixed.is_empty:
+            fixed = max(fixed.geoms, key=lambda g: g.area)
+        if isinstance(fixed, ShpPolygon) and not fixed.is_empty:
+            return fixed
+    return poly
 
 
 def _wall_line_m(wall: Wall, origin: tuple[float, float]) -> LineString:

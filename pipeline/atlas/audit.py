@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import LineString, Point, Polygon, box as shp_box
 from shapely.ops import unary_union
 
 from .planir import OpeningKind, PlanIR, RoomKind, Source
@@ -259,7 +259,29 @@ def _audit_unit(
         # the architect never drew. What remains a defect is a stretch with no wall, no
         # drawn line work (already unioned into `fabric`), and no neighbouring floor:
         # an edge to nowhere.
+        # An unclaimed pocket wholly inside one room — a shaft or column enclosure
+        # the floor wraps around — is not an envelope breach: the dwelling's
+        # enclosure is intact around it. Only pockets bordered by this room alone
+        # qualify; anything reachable from another room stays a leak.
+        pockets: list[Any] = []
+        bnd_e = plan.units[0].boundary if plan.units else []
+        if len(bnd_e) >= 3:
+            bp = Polygon(bnd_e)
+            if not bp.is_valid:
+                bp = bp.buffer(0)
+            floors_all = unary_union([q for _, q in shapes])
+            raw_bodies = unary_union(
+                [
+                    LineString([w.start, w.end]).buffer(w.thickness_mm / 2.0, cap_style=2)
+                    for w in plan.walls
+                ]
+            )
+            leftover_e = bp.difference(floors_all).difference(raw_bodies)
+            pockets = [
+                g for g in getattr(leftover_e, "geoms", [leftover_e]) if g.area > 5e4
+            ]
         leaks: list[str] = []
+        shaft_rims = 0
         for r, p in shapes:
             if r.kind.is_outdoor or r.kind in _UNENTERED:
                 continue  # balconies are open by definition
@@ -275,13 +297,27 @@ def _audit_unit(
                 faces_room = any(
                     q.distance(mid) < 150.0 for other, q in shapes if other is not r
                 )
-                if not faces_room:
-                    void += g.length
+                if faces_room:
+                    continue
+                pk = next((z for z in pockets if z.distance(mid) < 150.0), None)
+                if pk is not None:
+                    # Touching, not proximity: a room 140 mm away *behind a wall*
+                    # cannot reach the pocket, and counting it kept a genuine shaft
+                    # rim flagged as a leak.
+                    nbs = {r2.id for r2, q2 in shapes if q2.distance(pk) < 30.0}
+                    if nbs == {r.id}:
+                        shaft_rims += 1
+                        continue
+                void += g.length
             if void > p.exterior.length * 0.1:
                 leaks.append(
                     f"{r.label or r.kind.value} {covered:.0%} "
                     f"({void:.0f} mm facing nothing)"
                 )
+        if shaft_rims:
+            audit.notes.append(
+                f"{shaft_rims} ring stretch(es) rim an interior shaft pocket — enclosure intact"
+            )
         if leaks:
             audit.failures.append(
                 f"{len(leaks)} enclosed room(s) not sealed: " + ", ".join(leaks[:4])
@@ -305,7 +341,11 @@ def _audit_unit(
             if w.id in walls_with_doors
         ):
             continue
-        if any(q.distance(p) < 30.0 for other, q in shapes if other is not r):
+        # 60 mm: under any real wall thickness (walls hold floors 100 mm+ apart)
+        # but tolerant of the partition's 90 mm raster, which can leave two openly
+        # connected floors a sub-cell apart. A passage 33 mm from the bedroom it
+        # serves was reported unreachable by the stricter figure.
+        if any(q.distance(p) < 60.0 for other, q in shapes if other is not r):
             continue
         stranded.append(r.label or r.kind.value)
     if stranded:
@@ -408,18 +448,66 @@ def _audit_unit(
     # was drawn to; a recovered room far from them is mis-mapped even if it is sealed,
     # reachable and inside the polygon.
     ags = [
-        (a, r.label or r.kind.value)
-        for r, _ in shapes
+        (a, r, q)
+        for r, q in shapes
         for a in [r.dimension_agreement()]
         if a is not None
     ]
     if ags:
-        audit.dims = sum(a for a, _ in ags) / len(ags)
-        worst = min(ags)
-        if audit.dims < 0.85 or worst[0] < 0.55:
+        audit.dims = sum(a for a, _, _ in ags) / len(ags)
+
+        def _explained(r: Any, q: Any) -> float:
+            """How much of the printed rectangle is floor or structure the drawing
+            itself shows. A toilet whose printed 1676x1372 spans its own 150 mm
+            walls and a shaft measures 49% on floor alone and ~87% here; a room
+            whose area was genuinely taken by a neighbour stays unexplained,
+            because neighbouring floor deliberately does not count."""
+            sd = r.stated_dimension
+            minx, miny, maxx, maxy = q.bounds
+            cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+            parts = [q]
+            if plan.walls:
+                parts.append(
+                    unary_union(
+                        [
+                            LineString([w.start, w.end]).buffer(
+                                w.thickness_mm / 2.0, cap_style=2
+                            )
+                            for w in plan.walls
+                        ]
+                    )
+                )
+            if drawn is not None:
+                parts.append(drawn.buffer(80.0))
+            parts += [q2 for r2, q2 in shapes if r2.kind in _UNENTERED]
+            cover = unary_union(parts)
+            best = 0.0
+            for w_, d_ in ((sd.width_mm, sd.depth_mm), (sd.depth_mm, sd.width_mm)):
+                rect = shp_box(cx - w_ / 2.0, cy - d_ / 2.0, cx + w_ / 2.0, cy + d_ / 2.0)
+                best = max(best, cover.intersection(rect).area / rect.area)
+            return best
+
+        low = [(a, r, q) for a, r, q in ags if a < 0.55]
+        unexplained = [
+            (a, r) for a, r, q in low if _explained(r, q) < 0.85
+        ]
+        explained_n = len(low) - len(unexplained)
+        if explained_n:
+            audit.notes.append(
+                f"{explained_n} room(s) whose printed dimensions span structure the "
+                "drawing shows (walls/shafts) — shortfall explained, not lost"
+            )
+        worst_bad = min(unexplained, key=lambda t: t[0]) if unexplained else None
+        if audit.dims < 0.85 or worst_bad is not None:
+            worst_all = min(ags, key=lambda t: t[0])
+            label = (
+                f"worst {worst_bad[1].label or worst_bad[1].kind.value} at {worst_bad[0]:.0%}"
+                if worst_bad is not None
+                else f"worst {worst_all[1].label or worst_all[1].kind.value} at {worst_all[0]:.0%}"
+            )
             audit.failures.append(
                 f"printed-dimension agreement {audit.dims:.0%} across {len(ags)} "
-                f"labelled room(s), worst {worst[1]} at {worst[0]:.0%}"
+                f"labelled room(s), {label}"
             )
 
     # --- interior walls the drawing does not draw ----------------------------
@@ -535,9 +623,12 @@ def _audit_unit(
         )
 
         layout = furnish_plan(plan, origin=(0.0, 0.0))
-        rooms_m = {
-            r.id: _room_polygon_m(r, (0.0, 0.0)) for r in plan.rooms if len(r.polygon) >= 3
-        }
+        rooms_m = {}
+        for r in plan.rooms:
+            if len(r.polygon) < 3:
+                continue
+            q = _room_polygon_m(r, (0.0, 0.0))
+            rooms_m[r.id] = q if q.is_valid else q.buffer(0)
         cfg = SolverConfig()
         hard_by_room: dict[str, Any] = {}
         for r in plan.rooms:

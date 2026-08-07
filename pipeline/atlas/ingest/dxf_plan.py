@@ -912,6 +912,50 @@ def _map_house(
         )
         for e in unit.labels
     ]
+    # Kerb-permeable service zones. Toilets and kitchens contain drawn line work at
+    # wall-band scale that is not a wall: shower kerbs, screens, platform edges — 150 mm
+    # double-line bands the solver pairs exactly like a thin partition. Treated as
+    # barriers they fence off part of the room's own printed rectangle: three toilets
+    # measured 38-49% of their printed size with the missing floor sitting unclaimed on
+    # the far side of a kerb. No toilet has an internal 150 mm wall. Inside a service
+    # room's printed rectangle, kerb-scale bands (thin, short) stop being barriers; the
+    # rectangle is tested in both orientations because the printed "W x D" does not say
+    # which axis is which, and it is buffered because the label anchor is not centred.
+    service_rects: list[ShpPolygon] = []
+    for sd in seeds:
+        if sd.dimension is None:
+            continue
+        k = sd.kind
+        if not (k.is_wet or k is RoomKind.KITCHEN):
+            continue
+        dw, dd = sd.dimension.width_mm, sd.dimension.depth_mm
+        sx, sy = sd.point
+        for a, b in ((dw, dd), (dd, dw)):
+            service_rects.append(
+                shp_box(sx - a / 2 - 250.0, sy - b / 2 - 250.0, sx + a / 2 + 250.0, sy + b / 2 + 250.0)
+            )
+    service_zone = unary_union(service_rects) if service_rects else None
+
+    def _kerb_candidate(
+        a: tuple[float, float], b: tuple[float, float], thickness: float | None
+    ) -> bool:
+        """Could this piece of line work be a kerb rather than a wall?
+
+        Candidacy only — thin-ish (under 200 mm; real partitions here pair at 230),
+        short (under 3 m), near a service room's printed rectangle. Whether it *is*
+        a kerb is decided after growth, by what it fences: a kerb fences its room
+        from unclaimed cells, a real wall fences it from another room. Judging by
+        shape alone cut both ways on the same drawing — it freed two toilets and
+        cost two others their real walls.
+        """
+        if service_zone is None:
+            return False
+        if math.dist(a, b) > 3000.0:
+            return False
+        if thickness is not None and thickness > 200.0:
+            return False
+        return service_zone.buffer(200.0).contains(LineString([a, b]))
+
     # Parapets count. They were excluded on the grounds that "a parapet does not divide
     # anything", which is wrong twice over: a balcony is bounded by its guard, so without
     # parapets the wall graph never encloses one and the balcony is simply not part of the
@@ -1002,7 +1046,105 @@ def _map_house(
         # edge rather than centred on the room's own edge cells, which needs the footprint
         # boundary carried into the band derivation rather than inferred from missing cells.
         wall_solid=wall_solid,
+        outdoor_evidence=outdoor_evidence,
     )
+
+    # --- second pass: kerbs proven by what they fence -------------------------
+    # A service room short of its printed size may be fenced by its own kerb or
+    # shower screen — a thin drawn band the solver cannot tell from a partition.
+    # Shape alone cannot decide (judging by thin-and-short freed two toilets and
+    # cost two others their real walls), but after growth the distinction is
+    # checkable: a kerb fences its room from *unclaimed* cells, a real wall fences
+    # it from another space. Candidates beside an under-budget service room whose
+    # far side is claimed by nothing are removed, and the house is mapped once
+    # more without them.
+    if smap is not None and smap.spaces and service_zone is not None:
+        cand_lines: list[tuple[tuple[float, float], tuple[float, float], float]] = []
+        for w in walls:
+            if w.length_mm > 1e-6 and _kerb_candidate(w.start, w.end, w.thickness_mm):
+                cand_lines.append((w.start, w.end, w.thickness_mm))
+        for seg in raw_wall_segments:
+            if math.dist(seg.a, seg.b) >= cfg.raw_barrier_min_mm and _kerb_candidate(
+                seg.a, seg.b, None
+            ):
+                cand_lines.append((seg.a, seg.b, cfg.interior_wall_mm))
+        service_short = [
+            sp
+            for sp in smap.spaces
+            if (sp.kind.is_wet or sp.kind is RoomKind.KITCHEN)
+            and sp.dimension is not None
+            and not sp.polygon.is_empty
+            and sp.polygon.area < sp.dimension.area_mm2 * 0.75
+        ]
+        proven: list[LineString] = []
+        if service_short and cand_lines:
+            claimed_all = [sp.polygon for sp in smap.spaces if not sp.polygon.is_empty]
+            for a, b, thick in cand_lines:
+                line = LineString([a, b])
+                near = [sp for sp in service_short if sp.polygon.distance(line) < 350.0]
+                if not near:
+                    continue
+                sp = min(near, key=lambda q: q.polygon.distance(line))
+                mid = line.interpolate(0.5, normalized=True)
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                ln = math.hypot(dx, dy) or 1.0
+                nx, ny = -dy / ln, dx / ln
+                off = thick / 2.0 + 150.0
+                p1 = ShpPoint(mid.x + nx * off, mid.y + ny * off)
+                p2 = ShpPoint(mid.x - nx * off, mid.y - ny * off)
+                far = p1 if sp.polygon.distance(p1) > sp.polygon.distance(p2) else p2
+                if not footprint.contains(far):
+                    continue  # fences the outside: a real envelope piece
+                if any(q.contains(far) for q in claimed_all):
+                    continue  # fences another space: a real wall
+                proven.append(line)
+        if proven:
+            proven_u = unary_union(proven)
+
+            def _keep(a: tuple[float, float], b: tuple[float, float]) -> bool:
+                m = LineString([a, b]).interpolate(0.5, normalized=True)
+                return proven_u.distance(m) > 60.0
+
+            segments2 = [sgp for sgp in segments if _keep(*sgp)]
+            bodies2 = [
+                LineString([w.start, w.end]).buffer(
+                    max(w.thickness_mm, 90.0) / 2.0, cap_style=2, join_style=2
+                )
+                for w in walls
+                if w.length_mm > 1e-6 and _keep(w.start, w.end)
+            ]
+            for seg in raw_wall_segments:
+                if math.dist(seg.a, seg.b) < cfg.raw_barrier_min_mm or not _keep(seg.a, seg.b):
+                    continue
+                line = LineString([seg.a, seg.b])
+                if solved_lines is not None and solved_lines.distance(
+                    line.interpolate(0.5, normalized=True)
+                ) <= cfg.raw_barrier_explained_mm:
+                    continue
+                bodies2.append(
+                    line.buffer(cfg.interior_wall_mm / 2.0, cap_style=2, join_style=2)
+                )
+            remapped = map_spaces(
+                footprint,
+                seeds,
+                segments2,
+                MapConfig(
+                    interior_wall_mm=cfg.interior_wall_mm,
+                    exterior_wall_mm=cfg.exterior_wall_mm,
+                    min_space_area_mm2=cfg.min_room_area_mm2,
+                ),
+                prefix=f"{unit.name}-",
+                wall_solid=unary_union(bodies2) if bodies2 else None,
+                outdoor_evidence=outdoor_evidence,
+            )
+            if remapped is not None and remapped.spaces:
+                notes.append(
+                    f"{unit.name}: {len(proven)} kerb-scale band(s) beside under-size "
+                    "service rooms fenced only unclaimed floor and were released as "
+                    "growth barriers"
+                )
+                smap = remapped
+
     for n in smap.notes:
         notes.append(f"{unit.name}: {n}")
     for w in smap.warnings:
@@ -1466,12 +1608,12 @@ def _rooms_from_spaces(
         pieces = [
             g
             for g in getattr(leftover, "geoms", [leftover])
-            if isinstance(g, ShpPolygon) and g.area >= 1.5e5
+            if isinstance(g, ShpPolygon) and g.area >= 8e4
         ]
         for piece in sorted(pieces, key=lambda g: -g.area):
             frontier: list[tuple[float, int]] = []
             for i, poly in enumerate(claimed):
-                if poly.is_empty or poly.distance(piece) > 60.0:
+                if poly.is_empty or poly.distance(piece) > 100.0:
                     continue
                 shared = poly.buffer(70.0).intersection(piece).area
                 if shared > 0.0:
@@ -1680,6 +1822,15 @@ def _rooms_from_spaces(
                 claimed[j] = _open_holes(new_b)
 
     for sp, poly in zip(smap.spaces, claimed):
+        # The strip and kerb merges can leave a ring that touches itself at a point,
+        # which shapely calls invalid and the furnish solver crashes on. Normalise
+        # here, once, where every floor leaves the factory.
+        if not poly.is_empty and not poly.is_valid:
+            fixed = poly.buffer(0)
+            if isinstance(fixed, MultiPolygon) and not fixed.is_empty:
+                fixed = max(fixed.geoms, key=lambda g: g.area)
+            if isinstance(fixed, ShpPolygon) and not fixed.is_empty:
+                poly = fixed
         if sp.kind.is_outdoor:
             floor_level, ceil = -50.0, cfg.parapet_height_mm
         elif sp.kind.is_wet:

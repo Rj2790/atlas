@@ -672,6 +672,32 @@ def map_spaces(
                 parts += [("PASSAGE", comp) for comp in _components(pool - covered)]
                 big = cfg.corridor_min_area_mm2
                 for label, comp in parts:
+                    # Circulation is defined by connecting rooms. A "passage" whose
+                    # every open edge faces one single room is that room's own alcove
+                    # or vestibule — naming it produced a 3.4 m² corridor reachable
+                    # only through a bedroom, which the reachability audit rightly
+                    # refused. Give it back.
+                    owners_adj = {
+                        owner[nb]
+                        for c in comp
+                        for nb in _n4(c)
+                        if nb in owner and not blocked(c, nb)
+                    }
+                    if label == "PASSAGE" and len(owners_adj) == 1:
+                        only = next(iter(owners_adj))
+                        # Budget-guarded: an alcove is absorbed only while its room
+                        # stays near its printed size. Blanket absorption handed a
+                        # 4 m² pocket to a bedroom and pushed it to 47% agreement —
+                        # worse than the unreachable passage it replaced.
+                        fits = (
+                            want[only] is None
+                            or claimed[only] + len(comp) * cell_area <= want[only] * 1.25
+                        )
+                        if fits:
+                            for c in comp:
+                                owner[c] = only
+                            claimed[only] += len(comp) * cell_area
+                            continue
                     if len(comp) * cell_area < big * 0.5:
                         strips += len(comp) * cell_area
                         for c in comp:
@@ -730,6 +756,25 @@ def map_spaces(
                 ]
 
             for label, comp in parts:
+                # Same rule as the hatch-split path above: a "passage" facing one
+                # single room is that room's alcove, not circulation.
+                owners_adj = {
+                    owner[nb]
+                    for c in comp
+                    for nb in _n4(c)
+                    if nb in owner and not blocked(c, nb)
+                }
+                if label == "PASSAGE" and len(owners_adj) == 1:
+                    only = next(iter(owners_adj))
+                    fits = (
+                        want[only] is None
+                        or claimed[only] + len(comp) * cell_area <= want[only] * 1.25
+                    )
+                    if fits:
+                        for c in comp:
+                            owner[c] = only
+                        claimed[only] += len(comp) * cell_area
+                        continue
                 if len(comp) * cell_area < big * 0.5:
                     strips += len(comp) * cell_area
                     for c in comp:
